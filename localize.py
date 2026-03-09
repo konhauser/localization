@@ -448,7 +448,6 @@ def main():
               f"(nx={nx}, ny={ny}, nz={nz}, step={args.step} m)")
 
         # Debug: SRP score at nearest grid point to each truth
-        # (kept from your investigation; safe to leave in)
         # Compute SRP first (needed for this debug).
         srp = srp_phat_score(abs_pos, Z, freqs, fmask, tmask, grid, c=343.0, batch=256)
 
