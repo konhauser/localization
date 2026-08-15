@@ -1,123 +1,270 @@
-# Microphone Array Bird Localization (SRP-PHAT / DAS / MVDR)
+# Near-Field 3-D Bird Sound Localization
 
-This repository contains a baseline localization pipeline for simulated multi-channel bird song recordings captured by a planar microphone array. The script:
+`localize.py` localizes simulated bird vocalizations recorded by a planar,
+multichannel microphone array. It evaluates a Cartesian grid of candidate source
+positions with three wideband localization methods:
 
-- loads a multichannel `.wav` recording (112 channels)
-- loads microphone positions from `microphone_positions.csv`
-- optionally loads per-recording ground truth from a `.txt` metadata file
-- computes wideband spatial spectra over a 3D grid using:
-  - **SRP-PHAT** (robust localization in reverberant environments)
-  - **DAS** (conventional beamformer power spectrum; baseline)
-  - **MVDR/Capon** (minimum variance distortionless response; sharper than DAS)
-- estimates multiple sources by **peak picking** (non-maximum suppression)
-- saves plots overlaying **estimated peaks** and **truth positions**
-- writes `results.csv` with top peak coordinates and scores
+- **SRP-PHAT** (Steered Response Power with Phase Transform)
+- **DAS/Bartlett** (Delay-and-Sum beamforming)
+- **MVDR/Capon** (Minimum Variance Distortionless Response)
 
-> Note: This pipeline uses a **near-field point-source model** by scanning candidate 3D positions \((x,y,z)\) (not just directions).
+The program supports recordings containing either one or three sources. The
+source count is known metadata and must be supplied with `--num_sources`; it is
+never estimated from the spatial score map.
 
----
+## Features
 
-## Files
+- near-field, three-dimensional Cartesian search;
+- deterministic microphone selection by farthest-point sampling;
+- configurable STFT, frequency band, activity filtering, grid, and batch size;
+- 26-connected regional-maximum extraction with deterministic plateau handling;
+- exact fixed-count peak selection for three-source recordings;
+- optional truth matching and error calculation using the Hungarian algorithm;
+- normalized orthogonal score-map projections and relevant horizontal slices;
+- resumable-by-recording tabular output through an incrementally written CSV.
 
-Expected files in the working directory:
+## Requirements
 
-- `microphone_positions.csv`  
-  Contains the microphone geometry:
-  - one row labeled `Centre` with absolute array center coordinates (room frame, meters)
-  - microphone rows `001`..`112` with coordinates **relative to the centre**
+- Python 3.10 or newer
+- NumPy
+- pandas
+- SciPy
+- SoundFile
+- Matplotlib
 
-- `<name>.wav`  
-  Multichannel recording:
-  - sample rate typically **48 kHz**
-  - **112 channels**
-  - **channel order matches mic IDs** `001..112`
+Create and activate a virtual environment in PowerShell, then install the
+dependencies:
 
-- `<name>.txt` (optional)  
-  Metadata file containing ground truth source coordinates; the script extracts all `[x, y, z]` triplets.
-
-Outputs are written to `out/` by default:
-- `<name>_srp_slice.png`
-- `<name>_das_slice.png`
-- `<name>_mvdr_slice.png`
-- `results.csv`
-
----
-
-## Setup
-
-### Python version
-- Python 3.9+ recommended
-
-### Install dependencies
-
-```bash
-pip install numpy pandas scipy soundfile matplotlib
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install numpy pandas scipy soundfile matplotlib
 ```
 
-## Usage
+On Linux or macOS, activate the environment with
+`source .venv/bin/activate` instead.
 
-### Run on a single file
+## Input files
 
-```bash
-python localize.py --wav path_to_wav
-```abs
-### Run on all wavs
-```bash
-python localize.py --glob "path_to_wavs/*.wav"
+The input data are not bundled with this repository. A run requires a microphone
+coordinate file and either one WAV file or a glob matching multiple WAV files.
+
+### Microphone coordinates
+
+The CSV passed to `--csv` must contain the columns `mic_id`, `x`, `y`, and `z`:
+
+```csv
+mic_id,x,y,z
+centre,1.24,2.10,1.60
+001,0.0,-0.50,-0.40
+002,0.0,-0.25,-0.40
 ```
 
-## What the script does (pipeline overview)
+- Exactly one `centre` row gives the array centre in absolute room coordinates.
+- Numeric microphone rows give coordinates relative to that centre.
+- Numeric IDs are sorted numerically, so audio channel 0 corresponds to the
+  lowest numeric microphone ID, channel 1 to the next ID, and so on.
+- The WAV channel count must equal the number of numeric microphone rows.
 
-### 1) Load geometry
-Reads `microphone_positions.csv` and converts relative microphone coordinates to absolute room coordinates:
+Coordinates are measured in metres and use the order `(x, y, z)`. For the
+project's planar array, `x` is perpendicular to the array and `y` and `z` lie in
+the microphone plane.
 
-### 2) Load multichannel WAV
-Loads the multichannel recording into an array of shape:
+### Audio
 
-- `(samples, 112)`
+WAV files must contain one channel for every numeric microphone row. SoundFile
+loads audio as a two-dimensional array with shape `(samples, channels)`. The
+selected audio channels and selected microphone coordinates use the same index
+array, preserving their alignment.
 
-Channel index `0` corresponds to mic `001`, channel index `111` to mic `112` (assuming channel order matches mic IDs).
+### Optional ground-truth metadata
 
-### 3) STFT per microphone
-Computes a Short-Time Fourier Transform (STFT) for each channel:
+If a matching text file is available, it may contain one or three source
+coordinates in lines containing `[x, y, z]`, for example:
 
-- `Z[m, f, t]` is the complex STFT coefficient for microphone `m`,
-  frequency bin `f`, and time frame `t`.
+```text
+source_1_position = [3.40, 1.70, 1.20]
+```
 
-This yields:
-- `freqs`: array of frequency bin centers (Hz)
-- `times`: array of frame times (seconds)
-- `Z`: complex STFT data for all microphones
+For a single WAV, provide the metadata path with `--txt`. Otherwise the program
+looks for a `.txt` file with the same basename as the WAV. A missing metadata
+file is allowed; plots and estimates are still produced, but truth-matched error
+fields are omitted. When metadata exists, its number of coordinates must match
+`--num_sources`.
 
-### 4) Frequency selection
-Selects a frequency band (defaults: 1–9 kHz) to focus on bird vocalization content and reduce low-frequency noise.
+`--txt` cannot be combined with `--glob`, because one metadata path cannot
+describe multiple recordings.
 
-### 5) Activity mask (frame selection)
-Computes a simple energy measure per STFT frame (averaged across microphones and selected frequency bins) and keeps only the most energetic frames (default: top ~30%). This stabilizes spatial statistics by emphasizing frames where birds are active.
+## Quick start
 
-### 6) Build a 3D search grid (near-field)
-Creates a 3D grid of candidate source locations \((x,y,z)\) within user-defined bounds and resolution (`step`). This is a near-field approach (localization by scanning points, not only directions).
+### One recording
 
-### 7) Compute spatial spectra (scoring each grid point)
-For each candidate location, the script computes wideband spatial scores over the chosen frequency band:
+```powershell
+python .\localize.py `
+  --csv .\microphone_positions.csv `
+  --wav .\data\01-001.wav `
+  --txt .\data\01-001.txt `
+  --num_sources 1 `
+  --outdir .\out
+```
 
-- **SRP-PHAT**: uses PHAT-normalized pairwise cross-spectra to measure phase/time-delay consistency with the candidate point.
-- **DAS**: conventional beamformer (Bartlett) power, computed as \(\mathbf{a}^H\mathbf{R}\mathbf{a}\) per frequency and summed over frequencies.
-- **MVDR/Capon**: minimum-variance distortionless response spectrum, computed as \(1/(\mathbf{a}^H\mathbf{R}^{-1}\mathbf{a})\) per frequency and summed over frequencies (with diagonal loading).
+### Multiple recordings
 
-All methods use a near-field steering model based on distances from the candidate point to each microphone.
+All files matched by `--glob` must have the same known source count:
 
-### 8) Peak picking (multi-source estimate)
-Finds multiple candidate sources by selecting local maxima in the spatial map via non-maximum suppression:
-- keeps peaks above `rel_thresh * max_peak`
-- enforces a minimum separation `min_sep` between peaks
-- returns up to `max_peaks`
+```powershell
+python .\localize.py `
+  --csv .\microphone_positions.csv `
+  --glob "data/03-*.wav" `
+  --num_sources 3 `
+  --outdir .\out_three_source
+```
 
-The number of returned peaks is treated as an estimate of the number of sources in the recording.
+### Skip MVDR/Capon
 
-### 9) Plotting and evaluation (optional)
-For each method, the script saves an x–y heatmap slice at the z-value of the strongest estimated peak, and overlays:
-- estimated peak locations (x markers)
-- truth positions (o markers, if a `.txt` file is available)
+MVDR/Capon can be omitted when only SRP-PHAT and DAS/Bartlett are needed:
 
-If truth is available, it also computes and prints the minimum Euclidean distance from the top estimated peak to any truth position.
+```powershell
+python .\localize.py `
+  --csv .\microphone_positions.csv `
+  --wav .\data\01-001.wav `
+  --num_sources 1 `
+  --skip_mvdr
+```
+
+Run `python .\localize.py --help` for the complete command-line help.
+
+## Command-line options
+
+| Option | Default | Description |
+|---|---:|---|
+| `--csv` | `microphone_positions.csv` | Microphone-coordinate CSV. |
+| `--wav` | none | Process one WAV file. Exactly one of `--wav` and `--glob` is required. |
+| `--glob` | none | Process WAV files matching a glob, in sorted path order. |
+| `--txt` | matching WAV stem | Metadata for a single WAV; incompatible with `--glob`. |
+| `--outdir` | `out` | Output directory. It is created when missing. |
+| `--num_sources` | required | Known source count: `1` or `3`. |
+| `--mics_use` | `32` | Number of microphones to use; valid range is 2 through the available count. |
+| `--mic_selection` | `farthest` | `farthest` for deterministic geometric farthest-point sampling or `id` for approximately uniform numeric-ID selection. |
+| `--nperseg` | `1024` | STFT window length in samples. |
+| `--noverlap` | `768` | STFT overlap in samples; must be smaller than `nperseg`. |
+| `--fmin` | `1000` | Lowest retained STFT frequency in hertz. |
+| `--fmax` | `16000` | Highest retained STFT frequency in hertz. |
+| `--active_quantile` | `0.70` | Frame-power quantile threshold in `[0, 1)`; `0` retains all frames at or above the minimum power. |
+| `--xmin`, `--xmax` | `2.0`, `5.0` | Search bounds along x in metres. |
+| `--ymin`, `--ymax` | `0.2`, `3.6` | Search bounds along y in metres. |
+| `--zmin`, `--zmax` | `0.0`, `2.8` | Search bounds along z in metres. |
+| `--step` | `0.1` | Cartesian grid spacing in metres. |
+| `--min_sep` | `0.2` | Minimum Euclidean separation between selected estimates in metres. |
+| `--speed_of_sound` | `343.0` | Propagation speed in metres per second. |
+| `--mvdr_dl` | `0.01` | MVDR diagonal-loading factor. |
+| `--batch` | `128` | Candidate positions evaluated per score-map batch. |
+| `--skip_mvdr` | off | Do not compute MVDR/Capon. |
+
+## Processing pipeline
+
+1. **Load geometry.** The array centre is added to every relative microphone
+   coordinate. Microphones are numerically ordered and a deterministic subset is
+   selected.
+2. **Load audio.** The selected channel indices are applied to both the audio and
+   coordinate arrays.
+3. **Compute the multichannel STFT.** SciPy's STFT is evaluated independently for
+   each selected channel with no boundary extension.
+4. **Select frequencies and frames.** Frequency bins inside the configured band
+   are retained. Frame power is averaged over selected microphones and frequency
+   bins, then thresholded at `active_quantile`.
+5. **Build the grid.** The grid has shape `(number of y values, number of x
+   values, number of z values)` and is flattened in C order, with z changing
+   fastest.
+6. **Evaluate score maps.** All methods use candidate-to-microphone propagation
+   delays. DAS/Bartlett and MVDR/Capon use phase-only steering vectors based on
+   delays relative to selected microphone index 0; no `1/r` amplitude term is
+   included.
+7. **Extract regional maxima.** Equal-valued voxels connected by a face, edge, or
+   corner form one plateau. A plateau is a regional maximum only when no valid
+   26-neighbour has a larger score. Its smallest flat grid index represents it.
+8. **Select exactly K peaks.** Candidates are ordered by descending score and then
+   ascending flat index. For `K=1`, the highest candidate is returned. For `K=3`,
+   an exact branch-and-bound search finds the feasible triple with the greatest
+   total score while enforcing `min_sep`. The selector fails clearly if no such
+   set exists; it does not create fallback estimates.
+9. **Evaluate against truth.** When metadata is present, Hungarian one-to-one
+   matching reorders results by original truth index. It reports 3-D, depth
+   (`|delta x|`), and in-plane (`sqrt(delta y^2 + delta z^2)`) errors, plus the
+   nearest-grid error baseline.
+
+## Localization methods
+
+### SRP-PHAT
+
+For every microphone pair, the implementation forms `X_i * conj(X_j)`, applies
+PHAT normalization per time frame, averages over selected frames, compensates
+the candidate-dependent pair delay, and sums the real contribution over pairs
+and retained frequencies.
+
+### DAS/Bartlett
+
+The uncentered spatial second-moment matrix is calculated as `R = X X^H / T`.
+For each candidate and retained frequency, the Bartlett quadratic form
+`a^H R a` is evaluated and its real part is accumulated.
+
+### MVDR/Capon
+
+The same selected STFT frames define the spatial second-moment matrix. Each
+frequency matrix receives trace-scaled diagonal loading. The implementation
+solves the loaded linear system and sums `1 / real(a^H R_loaded^-1 a)` across
+frequencies, with numerical floors where needed.
+
+## Outputs
+
+For every processed recording and computed method (`srp`, `das`, and optionally
+`mvdr`), the output directory contains:
+
+- `<recording>_<method>_xy_max_z.png` -- x-y maximum projection over z;
+- `<recording>_<method>_xz_max_y.png` -- x-z maximum projection over y;
+- `<recording>_<method>_yz_max_x.png` -- y-z maximum projection over x;
+- `<recording>_<method>_z_<height>.png` -- normalized x-y slices at truth heights,
+  or at estimated heights when truth is unavailable;
+- `results.csv` -- one row per completed recording.
+
+The CSV always records the run configuration and score-ranked raw estimates.
+With truth metadata it also records:
+
+- one-based truth and estimate indices after matching;
+- truth-indexed estimated and true coordinates;
+- per-source 3-D, depth, and in-plane errors;
+- mean, median, and maximum matched errors;
+- per-source and aggregate nearest-grid errors.
+
+`results.csv` is rewritten after each completed recording, so results from
+earlier recordings remain available if a later run is interrupted. Existing
+rows are not automatically loaded or skipped; rerunning the same command starts
+a new in-memory result table.
+
+## Determinism and failure behavior
+
+Microphone selection, file ordering, regional-maxima ordering, plateau
+representation, score ties, and fixed-count selection are deterministic for
+identical inputs. The program raises an explicit error for conditions including:
+
+- an invalid or missing input selection;
+- incompatible `--txt` and `--glob` arguments;
+- a microphone count outside the available range;
+- channel/coordinate count mismatch;
+- metadata/source-count mismatch;
+- an empty frequency band or activity mask;
+- non-finite score maps; or
+- too few mutually separated regional maxima for the requested source count.
+
+## Scope and limitations
+
+- The implementation performs an exhaustive grid search, so finer grids and
+  larger search volumes increase runtime and memory use.
+- Steering is geometric and phase-only. It does not model distance-dependent
+  amplitude, measured room transfer functions, reverberation, or microphone
+  calibration differences.
+- Source-count estimation is outside the program's scope.
+- Grid spacing limits coordinate resolution, and `min_sep` can prevent close
+  sources from being selected as distinct estimates.
+- The provided runtime is a research implementation, not an optimized real-time
+  system.
