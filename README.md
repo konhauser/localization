@@ -55,13 +55,13 @@ The CSV passed to `--csv` must contain the columns `mic_id`, `x`, `y`, and `z`:
 
 ```csv
 mic_id,x,y,z
-centre,1.24,2.10,1.60
+center,1.24,2.10,1.60
 001,0.0,-0.50,-0.40
 002,0.0,-0.25,-0.40
 ```
 
-- Exactly one `centre` row gives the array centre in absolute room coordinates.
-- Numeric microphone rows give coordinates relative to that centre.
+- Exactly one `center` row gives the array center in absolute room coordinates.
+- Numeric microphone rows give coordinates relative to that center.
 - Numeric IDs are sorted numerically, so audio channel 0 corresponds to the
   lowest numeric microphone ID, channel 1 to the next ID, and so on.
 - The WAV channel count must equal the number of numeric microphone rows.
@@ -163,7 +163,7 @@ Run `python .\localize.py --help` for the complete command-line help.
 
 ## Processing pipeline
 
-1. **Load geometry.** The array centre is added to every relative microphone
+1. **Load geometry.** The array center is added to every relative microphone
    coordinate. Microphones are numerically ordered and a deterministic subset is
    selected.
 2. **Load audio.** The selected channel indices are applied to both the audio and
