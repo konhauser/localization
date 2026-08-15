@@ -241,6 +241,8 @@ earlier recordings remain available if a later run is interrupted. Existing
 rows are not automatically loaded or skipped; rerunning the same command starts
 a new in-memory result table.
 
+Example outputs from my thesis can be seen in the heatmaps directory.
+
 ## Determinism and failure behavior
 
 Microphone selection, file ordering, regional-maxima ordering, plateau
